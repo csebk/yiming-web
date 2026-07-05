@@ -7,6 +7,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { searchAllKnowledgeBases, getKnowledgeBase } from "@/lib/knowledge-registry";
+import { verifyToken } from "@/lib/auth";
+import { saveHistory } from "@/lib/database";
 
 // 模拟大模型响应（无 API Key 时的 fallback）
 function mockLLMResponse(): string {
@@ -64,6 +66,14 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const question = body.question?.trim();
+    
+    // 提取用户ID（可选：未登录也能问，但历史记录不保存）
+    const token = request.cookies.get("auth_token")?.value;
+    let userId: string | null = null;
+    if (token) {
+      const payload = verifyToken(token);
+      if (payload) userId = payload.userId;
+    }
     
     // 支持知识库参数切换
     const url = new URL(request.url);
@@ -130,7 +140,19 @@ ${question}`;
 
     const answer = await callDashScope(prompt);
 
-    // 3. 返回结果
+    // 3. 保存历史记录（仅已登录用户）
+    if (userId) {
+      try {
+        saveHistory(userId, question, answer, rules.map((r: any) => ({
+          id: r.id, title: r.title, category: r.category, text: r.text,
+        })), knowledgeBaseId);
+      } catch (saveErr) {
+        console.error("[yiming] 保存历史失败:", saveErr);
+        // 不阻塞主流程
+      }
+    }
+
+    // 4. 返回结果
     return NextResponse.json({
       answer,
       rules: rules.map((r: any) => ({

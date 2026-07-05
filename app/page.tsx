@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useAuth, type User } from "@/lib/auth-context";
 
 interface AnswerRule {
   id: number;
@@ -15,6 +16,14 @@ interface AnswerRecord {
   answer: string;
   rules: AnswerRule[];
   timestamp: number;
+}
+
+interface CloudHistoryItem {
+  id: string;
+  question: string;
+  answer: string;
+  rules: string | null;
+  timestamp: string;
 }
 
 interface ApiResponse {
@@ -42,6 +51,7 @@ const EXAMPLE_QUESTIONS = [
 ];
 
 export default function Home() {
+  const { user, logout } = useAuth();
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [currentAnswer, setCurrentAnswer] = useState<AnswerRecord | null>(null);
@@ -49,6 +59,8 @@ export default function Home() {
   const [error, setError] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const [dailyQuote, setDailyQuote] = useState<string>("");
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -68,17 +80,48 @@ export default function Home() {
     setDailyQuote(quotes[dayIndex]);
   }, []);
 
-  // 从 localStorage 加载历史
-  useEffect(() => {
+  // 加载云端历史
+  const loadCloudHistory = useCallback(async (page = 1) => {
+    if (!user) return;
+    setHistoryLoading(true);
     try {
-      const saved = localStorage.getItem("yiming_history");
-      if (saved) {
-        setHistory(JSON.parse(saved));
+      const res = await fetch(`/api/history?page=${page}&limit=50`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          const records: AnswerRecord[] = data.records.map((item: CloudHistoryItem) => ({
+            id: item.id,
+            question: item.question,
+            answer: item.answer,
+            rules: item.rules ? JSON.parse(item.rules) : [],
+            timestamp: new Date(item.timestamp).getTime(),
+          }));
+          setHistory(records);
+        }
       }
-    } catch {}
-  }, []);
+    } catch {
+      // fallback to localStorage
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [user]);
 
-  // 保存历史到 localStorage
+  // 从 localStorage 或云端加载历史
+  useEffect(() => {
+    if (user) {
+      loadCloudHistory();
+    } else {
+      try {
+        const saved = localStorage.getItem("yiming_history");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setHistory(parsed);
+        }
+      } catch {}
+    }
+  }, [user, loadCloudHistory]);
+
+  // 保存历史到 localStorage（未登录时）
   const saveHistory = useCallback((records: AnswerRecord[]) => {
     setHistory(records);
     try {
@@ -107,7 +150,7 @@ export default function Home() {
         setError(data.error);
       } else {
         const record: AnswerRecord = {
-          id: Date.now().toString(),
+          id: user ? data.rules?.[0]?.id?.toString() || Date.now().toString() : Date.now().toString(),
           question: question.trim(),
           answer: data.answer,
           rules: data.rules,
@@ -142,6 +185,12 @@ export default function Home() {
   const handleClearHistory = () => {
     setHistory([]);
     localStorage.removeItem("yiming_history");
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setHistory([]);
+    setShowUserMenu(false);
   };
 
   const handleReset = () => {
@@ -210,6 +259,41 @@ export default function Home() {
                 ✕ 关闭
               </button>
             )}
+            {/* User menu */}
+            {user ? (
+              <div className="relative">
+                <button
+                  onClick={() => setShowUserMenu(!showUserMenu)}
+                  className="px-3 py-1.5 text-xs bg-amber-50 border border-amber-200 rounded-lg text-stone-600 hover:bg-amber-100 transition-colors flex items-center gap-1"
+                >
+                  <span className="w-5 h-5 bg-gradient-to-br from-amber-400 to-orange-500 rounded-full flex items-center justify-center text-white text-[10px] font-bold">
+                    {user.username.charAt(0).toUpperCase()}
+                  </span>
+                  {user.username}
+                </button>
+                {showUserMenu && (
+                  <div className="absolute right-0 top-full mt-1 w-40 bg-white border border-amber-200 rounded-xl shadow-lg overflow-hidden z-50">
+                    <div className="px-3 py-2 border-b border-amber-100">
+                      <p className="text-xs font-medium text-stone-700">{user.username}</p>
+                      {user.email && <p className="text-[10px] text-stone-400 truncate">{user.email}</p>}
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="w-full text-left px-3 py-2 text-xs text-red-500 hover:bg-red-50 transition-colors"
+                    >
+                      退出登录
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <a
+                href="/auth"
+                className="px-3 py-1.5 text-xs bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 transition-colors"
+              >
+                登录 / 注册
+              </a>
+            )}
           </div>
         </div>
       </header>
@@ -239,18 +323,24 @@ export default function Home() {
               </div>
             </div>
             <div className="p-4 space-y-2">
-              {history.map((record) => (
-                <button
-                  key={record.id}
-                  onClick={() => handleHistoryClick(record)}
-                  className="w-full text-left p-3 bg-stone-50 rounded-xl border border-stone-100 hover:border-amber-300 hover:bg-amber-50/50 transition-all group"
-                >
-                  <p className="text-sm text-stone-700 line-clamp-2 group-hover:text-stone-900">
-                    {record.question}
-                  </p>
-                  <p className="text-[11px] text-stone-400 mt-1">{formatTime(record.timestamp)}</p>
-                </button>
-              ))}
+              {historyLoading ? (
+                <p className="text-sm text-stone-400 text-center py-8">加载中...</p>
+              ) : history.length === 0 ? (
+                <p className="text-sm text-stone-400 text-center py-8">暂无历史记录</p>
+              ) : (
+                history.map((record) => (
+                  <button
+                    key={record.id}
+                    onClick={() => handleHistoryClick(record)}
+                    className="w-full text-left p-3 bg-stone-50 rounded-xl border border-stone-100 hover:border-amber-300 hover:bg-amber-50/50 transition-all group"
+                  >
+                    <p className="text-sm text-stone-700 line-clamp-2 group-hover:text-stone-900">
+                      {record.question}
+                    </p>
+                    <p className="text-[11px] text-stone-400 mt-1">{formatTime(record.timestamp)}</p>
+                  </button>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -283,6 +373,11 @@ export default function Home() {
             <p className="text-stone-500 text-sm max-w-md mx-auto">
               写下你的问题，《易命之书》52条人生法则将为你解读
             </p>
+            {!user && (
+              <p className="text-xs text-amber-500 mt-2">
+                <a href="/auth" className="underline hover:text-amber-700">登录</a>后可云端同步历史记录
+              </p>
+            )}
           </div>
         )}
 
@@ -440,7 +535,7 @@ export default function Home() {
                 参考法则
               </h3>
               <div className="space-y-3">
-                {currentAnswer.rules.map((rule, index) => (
+                {currentAnswer.rules.map((rule: AnswerRule, index: number) => (
                   <div
                     key={rule.id}
                     className="p-4 bg-gradient-to-r from-amber-50/60 to-orange-50/30 rounded-xl border border-amber-100/80 hover:border-amber-300/60 transition-all duration-200 hover:shadow-sm"
