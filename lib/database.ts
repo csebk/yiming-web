@@ -24,11 +24,15 @@ const memoryStore = {
   history: new Map<string, any>(),
 };
 
+// Prepared statements (populated in non-fallback mode)
+let stmts: Record<string, any> = {};
+
 if (USE_FALLBACK) {
   console.log("[yiming-db] Running in serverless fallback mode (SQLite unavailable)");
 } else {
-  // Full SQLite mode
-  import("better-sqlite3").then(({ default: Database }) => {
+  // Full SQLite mode — initialize eagerly (sync) rather than async
+  try {
+    const Database = require("better-sqlite3");
     const path = require("path");
     const fs = require("fs");
 
@@ -65,15 +69,26 @@ if (USE_FALLBACK) {
       CREATE INDEX IF NOT EXISTS idx_history_user_id ON ask_history(user_id);
     `);
 
-    (global as any).__yimingDb = { db, ready: true };
-  }).catch(() => {
-    USE_FALLBACK = true;
-    console.log("[yiming-db] SQLite init failed, using fallback");
-  });
-}
+    // Prepare all statements
+    stmts = {
+      createUser: db.prepare("INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)"),
+      getUserByUsername: db.prepare("SELECT * FROM users WHERE username = ?"),
+      getUserByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
+      getUserById: db.prepare("SELECT * FROM users WHERE id = ?"),
+      insertHistory: db.prepare("INSERT INTO ask_history (id, user_id, question, answer, rules, knowledge_base) VALUES (?, ?, ?, ?, ?, ?)"),
+      getHistoryByUser: db.prepare("SELECT id, user_id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"),
+      getHistoryCount: db.prepare("SELECT COUNT(*) as total FROM ask_history WHERE user_id = ?"),
+      getHistoryById: db.prepare("SELECT id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE id = ? AND user_id = ?"),
+      deleteHistoryItem: db.prepare("DELETE FROM ask_history WHERE id = ? AND user_id = ?"),
+      clearUserHistory: db.prepare("DELETE FROM ask_history WHERE user_id = ?"),
+    };
 
-// Preparing statements (only used in non-fallback mode)
-let stmts: any = {};
+    (global as any).__yimingDb = { db, ready: true };
+  } catch (err) {
+    USE_FALLBACK = true;
+    console.log("[yiming-db] SQLite init failed, using fallback:", err);
+  }
+}
 
 export interface CreateUserResult {
   id: string;

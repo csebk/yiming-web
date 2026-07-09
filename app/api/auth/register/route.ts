@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
     // Create token
     const token = createToken({ userId: user.id, username: user.username });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       user: {
         id: user.id,
@@ -81,6 +81,17 @@ export async function POST(request: NextRequest) {
       },
       token,
     });
+
+    // Set token in HttpOnly cookie
+    response.cookies.set("auth_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60, // 7 days
+      path: "/",
+    });
+
+    return response;
   } catch (error) {
     console.error("[yiming] 注册失败:", error);
     return NextResponse.json(

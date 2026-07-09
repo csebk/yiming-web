@@ -76,6 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       if (data.success) {
         setUser(data.user);
+        // After registration, refresh user state to confirm cookie is set
+        await refreshUser();
       }
       return data;
     } catch {
