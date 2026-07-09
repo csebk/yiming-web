@@ -39,8 +39,16 @@ if (USE_FALLBACK) {
     const DB_DIR = path.join(process.cwd(), ".data");
     const DB_PATH = path.join(DB_DIR, "yiming.db");
 
-    if (!fs.existsSync(DB_DIR)) {
-      fs.mkdirSync(DB_DIR, { recursive: true });
+    // Try to create DB directory (may fail on read-only FS like Vercel)
+    try {
+      if (!fs.existsSync(DB_DIR)) {
+        fs.mkdirSync(DB_DIR, { recursive: true });
+      }
+    } catch (mkdirErr) {
+      // Filesystem is read-only (Vercel serverless) — fall back to memory
+      USE_FALLBACK = true;
+      console.log("[yiming-db] Filesystem is read-only, using in-memory fallback");
+      throw new Error("Read-only filesystem");
     }
 
     const db = new Database(DB_PATH);
