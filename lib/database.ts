@@ -8,14 +8,27 @@
 import { randomUUID } from "crypto";
 
 // Detect if running in serverless environment (native modules unavailable)
+// Also detect read-only filesystem (Vercel serverless)
 let USE_FALLBACK = false;
 try {
   const Database = require("better-sqlite3");
   if (!Database) {
     USE_FALLBACK = true;
   }
-} catch {
+  // Test if we can actually write to the filesystem
+  const path = require("path");
+  const fs = require("fs");
+  const testDir = path.join(process.cwd(), ".data");
+  if (!fs.existsSync(testDir)) {
+    fs.mkdirSync(testDir, { recursive: true });
+  }
+  const testFile = path.join(testDir, "test.tmp");
+  fs.writeFileSync(testFile, "test");
+  fs.unlinkSync(testFile);
+  fs.rmdirSync(testDir);
+} catch (err: unknown) {
   USE_FALLBACK = true;
+  console.log("[yiming-db] Filesystem test failed, using fallback:", String(err));
 }
 
 // In-memory fallback store for serverless environments
@@ -38,18 +51,6 @@ if (USE_FALLBACK) {
 
     const DB_DIR = path.join(process.cwd(), ".data");
     const DB_PATH = path.join(DB_DIR, "yiming.db");
-
-    // Try to create DB directory (may fail on read-only FS like Vercel)
-    try {
-      if (!fs.existsSync(DB_DIR)) {
-        fs.mkdirSync(DB_DIR, { recursive: true });
-      }
-    } catch (mkdirErr) {
-      // Filesystem is read-only (Vercel serverless) — fall back to memory
-      USE_FALLBACK = true;
-      console.log("[yiming-db] Filesystem is read-only, using in-memory fallback");
-      throw new Error("Read-only filesystem");
-    }
 
     const db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
