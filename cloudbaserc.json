@@ -7,7 +7,11 @@
     "framework": "next",
     "installCommand": "npm install",
     "buildCommand": "npm run build",
-    "outputDir": ".next"
+    "outputDir": ".next",
+    "envVariables": {
+      "DASHSCOPE_API_KEY": "sk-ws-...I9tw",
+      "JWT_SECRET": "yiming-web-prod-secret-2026"
+    }
   },
   "cloudrun": {
     "name": "yiming-web"
