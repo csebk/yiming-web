@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
   const q = searchParams.get("q") || "";
 
   try {
-    const result = adminListHistory(page, limit, userId, q);
+    const result = await adminListHistory(page, limit, userId, q);
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     console.error("[admin/history]", err);

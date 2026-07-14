@@ -20,9 +20,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Try username first, then email
-    let user = getUserByUsername(username);
+    let user = await getUserByUsername(username);
     if (!user) {
-      user = getUserByEmail(username);
+      user = await getUserByEmail(username);
     }
 
     if (!user) {

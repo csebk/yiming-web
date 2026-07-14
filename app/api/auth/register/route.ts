@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if username exists
-    const existingUser = getUserByUsername(username);
+    const existingUser = await getUserByUsername(username);
     if (existingUser) {
       return NextResponse.json(
         { success: false, error: "用户名已被占用" },
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
 
     // Check if email exists
     if (email) {
-      const existingEmail = getUserByEmail(email);
+      const existingEmail = await getUserByEmail(email);
       if (existingEmail) {
         return NextResponse.json(
           { success: false, error: "邮箱已被注册" },
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
 
     // Hash password and create user
     const passwordHash = await hashPassword(password);
-    const user = createUser(username, email || null, passwordHash);
+    const user = await createUser(username, email || null, passwordHash);
 
     // Create token
     const token = createToken({ userId: user.id, username: user.username });

@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const search = searchParams.get("search") || "";
 
   try {
-    const result = adminListUsers(page, limit, search);
+    const result = await adminListUsers(page, limit, search);
     return NextResponse.json({ success: true, ...result });
   } catch (err) {
     console.error("[admin/users]", err);

@@ -143,7 +143,7 @@ ${question}`;
     // 3. 保存历史记录（仅已登录用户）
     if (userId) {
       try {
-        saveHistory(userId, question, answer, rules.map((r: any) => ({
+        await saveHistory(userId, question, answer, rules.map((r: any) => ({
           id: r.id, title: r.title, category: r.category, text: r.text,
         })), knowledgeBaseId);
       } catch (saveErr) {

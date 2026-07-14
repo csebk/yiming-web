@@ -1,235 +1,237 @@
 /**
- * Database layer for yiming-web
- * Uses SQLite via better-sqlite3 for local storage (non-serverless)
- * Gracefully degrades to in-memory fallback on Vercel serverless
- * Tables: users, ask_history
+ * Database layer for yiming-web — PostgreSQL edition (Supabase/Neon compatible)
+ *
+ * All functions are async. Uses `pg` connection pool.
+ * Connection string comes from env DATABASE_URL. If missing, falls back to
+ * in-memory Map storage (dev only) so build + local dev still work.
+ *
+ * Tables:
+ *   users       (id uuid pk, username, email, password_hash, created_at, updated_at)
+ *   ask_history (id uuid pk, user_id fk, question, answer, rules jsonb, knowledge_base, timestamp)
  */
 
 import { randomUUID } from "crypto";
+import { Pool } from "pg";
 
-// Detect if running in serverless environment (native modules unavailable)
-// Also detect read-only filesystem (Vercel serverless)
-let USE_FALLBACK = false;
-try {
-  const Database = require("better-sqlite3");
-  if (!Database) {
-    USE_FALLBACK = true;
-  }
-  // Test if we can actually write to the filesystem
-  const path = require("path");
-  const fs = require("fs");
-  const testDir = process.env.DATA_DIR || path.join(process.cwd(), ".data");
-  if (!fs.existsSync(testDir)) {
-    fs.mkdirSync(testDir, { recursive: true });
-  }
-  const testFile = path.join(testDir, "test.tmp");
-  fs.writeFileSync(testFile, "test");
-  fs.unlinkSync(testFile);
-} catch (err: unknown) {
-  USE_FALLBACK = true;
-  console.log("[yiming-db] Filesystem test failed, using fallback:", String(err));
-}
+let USE_FALLBACK = !process.env.DATABASE_URL;
 
-// In-memory fallback store for serverless environments
 const memoryStore = {
   users: new Map<string, any>(),
   history: new Map<string, any>(),
 };
 
-// Prepared statements (populated in non-fallback mode)
-let stmts: Record<string, any> = {};
+let pool: Pool | null = null;
+let initPromise: Promise<void> | null = null;
 
-if (USE_FALLBACK) {
-  console.log("[yiming-db] Running in serverless fallback mode (SQLite unavailable)");
-} else {
-  // Full SQLite mode — initialize eagerly (sync) rather than async
+function getPool(): Pool | null {
+  if (USE_FALLBACK) return null;
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
+    pool.on("error", (err) => console.error("[yiming-db pg pool error]", err));
+  }
+  return pool;
+}
+
+async function initSchema(): Promise<void> {
+  const p = getPool();
+  if (!p) return;
+  const client = await p.connect();
   try {
-    const Database = require("better-sqlite3");
-    const path = require("path");
-    const fs = require("fs");
-
-    const DB_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
-    if (!fs.existsSync(DB_DIR)) {
-      fs.mkdirSync(DB_DIR, { recursive: true });
-    }
-    const DB_PATH = path.join(DB_DIR, "yiming.db");
-    console.log("[yiming-db] Using SQLite at:", DB_PATH);
-
-    const db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("foreign_keys = ON");
-
-    db.exec(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE,
+        id            TEXT PRIMARY KEY,
+        username      TEXT UNIQUE NOT NULL,
+        email         TEXT UNIQUE,
         password_hash TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now'))
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS ask_history (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id),
-        question TEXT NOT NULL,
-        answer TEXT NOT NULL,
-        rules TEXT,
+        id             TEXT PRIMARY KEY,
+        user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        question       TEXT NOT NULL,
+        answer         TEXT NOT NULL,
+        rules          TEXT,
         knowledge_base TEXT DEFAULT 'yiming',
-        timestamp TEXT DEFAULT (datetime('now'))
+        timestamp      TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_history_user ON ask_history(user_id, timestamp DESC);
-      CREATE INDEX IF NOT EXISTS idx_history_user_id ON ask_history(user_id);
+      CREATE INDEX IF NOT EXISTS idx_history_time ON ask_history(timestamp DESC);
     `);
-
-    // Prepare all statements
-    stmts = {
-      createUser: db.prepare("INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)"),
-      getUserByUsername: db.prepare("SELECT * FROM users WHERE username = ?"),
-      getUserByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
-      getUserById: db.prepare("SELECT * FROM users WHERE id = ?"),
-      insertHistory: db.prepare("INSERT INTO ask_history (id, user_id, question, answer, rules, knowledge_base) VALUES (?, ?, ?, ?, ?, ?)"),
-      getHistoryByUser: db.prepare("SELECT id, user_id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"),
-      getHistoryCount: db.prepare("SELECT COUNT(*) as total FROM ask_history WHERE user_id = ?"),
-      getHistoryById: db.prepare("SELECT id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE id = ? AND user_id = ?"),
-      deleteHistoryItem: db.prepare("DELETE FROM ask_history WHERE id = ? AND user_id = ?"),
-      clearUserHistory: db.prepare("DELETE FROM ask_history WHERE user_id = ?"),
-    };
-
-    (global as any).__yimingDb = { db, ready: true };
-  } catch (err) {
-    USE_FALLBACK = true;
-    console.log("[yiming-db] SQLite init failed, using fallback:", err);
+    console.log("[yiming-db] Postgres schema ready");
+  } finally {
+    client.release();
   }
 }
 
+async function ensureReady(): Promise<void> {
+  if (USE_FALLBACK) return;
+  if (!initPromise) {
+    initPromise = initSchema().catch((err) => {
+      console.error("[yiming-db] init failed:", err);
+      initPromise = null; // allow retry
+      throw err;
+    });
+  }
+  return initPromise;
+}
+
+if (USE_FALLBACK) {
+  console.warn("[yiming-db] DATABASE_URL not set — using in-memory fallback (data will NOT persist)");
+}
+
+// ============ Types ============
 export interface CreateUserResult {
   id: string;
   username: string;
   email: string | null;
-  created_at: string;
+  password_hash: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface HistoryRecord {
   id: string;
+  user_id: string;
   question: string;
   answer: string;
   rules: string | null;
-  knowledge_base: string;
+  knowledge_base?: string;
   timestamp: string;
 }
 
-export function createUser(username: string, email: string | null, passwordHash: string): CreateUserResult {
-  if (USE_FALLBACK) {
-    const id = randomUUID();
-    memoryStore.users.set(id, { id, username, email, password_hash: passwordHash, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-    return { id, username, email: email ?? '', created_at: new Date().toISOString() };
-  }
+// ============ User functions ============
+
+export async function createUser(username: string, email: string | null, passwordHash: string): Promise<CreateUserResult> {
   const id = randomUUID();
-  stmts.createUser.run(id, username, email, passwordHash);
-  return { id, username, email: email ?? '', created_at: new Date().toISOString() };
-}
-
-export function getUserByUsername(username: string) {
+  const nowIso = new Date().toISOString();
   if (USE_FALLBACK) {
-    for (const u of memoryStore.users.values()) {
-      if (u.username === username) return u;
-    }
-    return null;
+    const rec = { id, username, email, password_hash: passwordHash, created_at: nowIso, updated_at: nowIso };
+    memoryStore.users.set(id, rec);
+    return rec;
   }
-  return stmts.getUserByUsername.get(username) as any;
+  await ensureReady();
+  const p = getPool()!;
+  await p.query(
+    "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, $4)",
+    [id, username, email, passwordHash]
+  );
+  return { id, username, email, password_hash: passwordHash, created_at: nowIso, updated_at: nowIso };
 }
 
-export function getUserByEmail(email: string) {
+export async function getUserByUsername(username: string): Promise<CreateUserResult | undefined> {
   if (USE_FALLBACK) {
-    for (const u of memoryStore.users.values()) {
-      if (u.email === email) return u;
-    }
-    return null;
+    for (const u of memoryStore.users.values()) if (u.username === username) return u;
+    return undefined;
   }
-  return stmts.getUserByEmail.get(email) as any;
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM users WHERE username = $1", [username]);
+  return r.rows[0];
 }
 
-export function getUserById(id: string): CreateUserResult | undefined {
+export async function getUserByEmail(email: string): Promise<CreateUserResult | undefined> {
   if (USE_FALLBACK) {
-    return memoryStore.users.get(id) as CreateUserResult | undefined;
+    for (const u of memoryStore.users.values()) if (u.email === email) return u;
+    return undefined;
   }
-  return stmts.getUserById.get(id) as CreateUserResult | undefined;
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM users WHERE email = $1", [email]);
+  return r.rows[0];
 }
 
-export function saveHistory(
+export async function getUserById(id: string): Promise<CreateUserResult | undefined> {
+  if (USE_FALLBACK) return memoryStore.users.get(id);
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM users WHERE id = $1", [id]);
+  return r.rows[0];
+}
+
+// ============ History functions ============
+
+export async function saveHistory(
   userId: string,
   question: string,
   answer: string,
   rules: any[],
   knowledgeBase: string = "yiming"
-): string {
+): Promise<string> {
   const id = randomUUID();
+  const rulesJson = JSON.stringify(rules || []);
   if (USE_FALLBACK) {
     memoryStore.history.set(id, {
-      id, user_id: userId, question, answer,
-      rules: JSON.stringify(rules), knowledge_base: knowledgeBase,
-      timestamp: new Date().toISOString()
+      id, user_id: userId, question, answer, rules: rulesJson, knowledge_base: knowledgeBase,
+      timestamp: new Date().toISOString(),
     });
     return id;
   }
-  stmts.insertHistory.run(id, userId, question, answer, JSON.stringify(rules), knowledgeBase);
+  await ensureReady();
+  await getPool()!.query(
+    "INSERT INTO ask_history (id, user_id, question, answer, rules, knowledge_base) VALUES ($1, $2, $3, $4, $5, $6)",
+    [id, userId, question, answer, rulesJson, knowledgeBase]
+  );
   return id;
 }
 
-export function getHistory(userId: string, page: number = 1, limit: number = 20) {
+export async function getHistory(userId: string, page: number = 1, limit: number = 20) {
+  const offset = (page - 1) * limit;
   if (USE_FALLBACK) {
     const all = Array.from(memoryStore.history.values()).filter((h: any) => h.user_id === userId);
-    const offset = (page - 1) * limit;
-    const records = all.slice(offset, offset + limit);
-    return { records: records as HistoryRecord[], total: all.length, page, limit, totalPages: Math.ceil(all.length / limit) };
+    all.sort((a: any, b: any) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+    return { records: all.slice(offset, offset + limit), total: all.length, page, limit };
   }
-  const offset = (page - 1) * limit;
-  const records = stmts.getHistoryByUser.all(userId, limit, offset) as HistoryRecord[];
-  const count = stmts.getHistoryCount.get(userId) as { total: number };
-  return { records, total: count.total, page, limit, totalPages: Math.ceil(count.total / limit) };
+  await ensureReady();
+  const p = getPool()!;
+  const total = (await p.query("SELECT COUNT(*)::int AS c FROM ask_history WHERE user_id = $1", [userId])).rows[0].c;
+  const records = (await p.query(
+    "SELECT id, user_id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3",
+    [userId, limit, offset]
+  )).rows;
+  return { records, total, page, limit };
 }
 
-export function getHistoryItem(historyId: string, userId: string): HistoryRecord | undefined {
+export async function getHistoryItem(historyId: string, userId: string): Promise<HistoryRecord | undefined> {
   if (USE_FALLBACK) {
-    const item = memoryStore.history.get(historyId);
-    return item && item.user_id === userId ? (item as HistoryRecord) : undefined;
+    const item: any = memoryStore.history.get(historyId);
+    if (!item || item.user_id !== userId) return undefined;
+    return item;
   }
-  return stmts.getHistoryById.get(historyId, userId) as HistoryRecord | undefined;
+  await ensureReady();
+  const r = await getPool()!.query(
+    "SELECT id, user_id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE id = $1 AND user_id = $2",
+    [historyId, userId]
+  );
+  return r.rows[0];
 }
 
-export function deleteHistoryItem(historyId: string, userId: string): boolean {
+export async function deleteHistoryItem(historyId: string, userId: string): Promise<boolean> {
   if (USE_FALLBACK) {
-    const item = memoryStore.history.get(historyId);
-    if (item && item.user_id === userId) {
-      memoryStore.history.delete(historyId);
-      return true;
-    }
+    const item: any = memoryStore.history.get(historyId);
+    if (item && item.user_id === userId) { memoryStore.history.delete(historyId); return true; }
     return false;
   }
-  const result = stmts.deleteHistoryItem.run(historyId, userId);
-  return result.changes > 0;
+  await ensureReady();
+  const r = await getPool()!.query("DELETE FROM ask_history WHERE id = $1 AND user_id = $2", [historyId, userId]);
+  return (r.rowCount ?? 0) > 0;
 }
 
-export function clearUserHistory(userId: string): void {
+export async function clearUserHistory(userId: string): Promise<void> {
   if (USE_FALLBACK) {
-    for (const [key, val] of memoryStore.history.entries()) {
-      if ((val as any).user_id === userId) memoryStore.history.delete(key);
-    }
+    for (const [k, v] of memoryStore.history.entries()) if ((v as any).user_id === userId) memoryStore.history.delete(k);
     return;
   }
-  stmts.clearUserHistory.run(userId);
+  await ensureReady();
+  await getPool()!.query("DELETE FROM ask_history WHERE user_id = $1", [userId]);
 }
 
-export function closeDatabase() {
-  // No-op in fallback mode
-  if (!USE_FALLBACK && (global as any).__yimingDb?.db) {
-    (global as any).__yimingDb.db.close();
-  }
-}
+// ============ Admin analytics ============
 
-// ============ Admin analytics functions ============
-
-export function adminGetStats() {
+export async function adminGetStats() {
   if (USE_FALLBACK) {
     const users = Array.from(memoryStore.users.values());
     const history = Array.from(memoryStore.history.values()) as any[];
@@ -244,17 +246,25 @@ export function adminGetStats() {
       history_last_7d: history.filter(h => new Date(h.timestamp).getTime() > weekAgo).length,
     };
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
-  const userCount = db.prepare("SELECT COUNT(*) as c FROM users").get().c;
-  const historyCount = db.prepare("SELECT COUNT(*) as c FROM ask_history").get().c;
-  const users24h = db.prepare("SELECT COUNT(*) as c FROM users WHERE created_at > datetime('now', '-1 day')").get().c;
-  const history24h = db.prepare("SELECT COUNT(*) as c FROM ask_history WHERE timestamp > datetime('now', '-1 day')").get().c;
-  const history7d = db.prepare("SELECT COUNT(*) as c FROM ask_history WHERE timestamp > datetime('now', '-7 day')").get().c;
-  return { user_count: userCount, history_count: historyCount, users_last_24h: users24h, history_last_24h: history24h, history_last_7d: history7d };
+  await ensureReady();
+  const p = getPool()!;
+  const [u, h, u24, h24, h7] = await Promise.all([
+    p.query("SELECT COUNT(*)::int AS c FROM users"),
+    p.query("SELECT COUNT(*)::int AS c FROM ask_history"),
+    p.query("SELECT COUNT(*)::int AS c FROM users WHERE created_at > NOW() - INTERVAL '1 day'"),
+    p.query("SELECT COUNT(*)::int AS c FROM ask_history WHERE timestamp > NOW() - INTERVAL '1 day'"),
+    p.query("SELECT COUNT(*)::int AS c FROM ask_history WHERE timestamp > NOW() - INTERVAL '7 day'"),
+  ]);
+  return {
+    user_count: u.rows[0].c,
+    history_count: h.rows[0].c,
+    users_last_24h: u24.rows[0].c,
+    history_last_24h: h24.rows[0].c,
+    history_last_7d: h7.rows[0].c,
+  };
 }
 
-export function adminGetDailyTrend(days: number = 30) {
+export async function adminGetDailyTrend(days: number = 30) {
   if (USE_FALLBACK) {
     const now = Date.now();
     const cutoff = now - days * 24 * 3600 * 1000;
@@ -269,18 +279,18 @@ export function adminGetDailyTrend(days: number = 30) {
     });
     return Object.entries(byDate).sort().map(([date, count]) => ({ date, count }));
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
-  const rows = db.prepare(
-    `SELECT substr(timestamp, 1, 10) as date, COUNT(*) as count
+  await ensureReady();
+  const r = await getPool()!.query(
+    `SELECT to_char(timestamp, 'YYYY-MM-DD') AS date, COUNT(*)::int AS count
      FROM ask_history
-     WHERE timestamp > datetime('now', ?)
-     GROUP BY date ORDER BY date ASC`
-  ).all(`-${days} day`) as { date: string; count: number }[];
-  return rows;
+     WHERE timestamp > NOW() - ($1 || ' day')::INTERVAL
+     GROUP BY date ORDER BY date ASC`,
+    [String(days)]
+  );
+  return r.rows;
 }
 
-export function adminGetTopRules(limit: number = 10) {
+export async function adminGetTopRules(limit: number = 10) {
   if (USE_FALLBACK) {
     const counts: Record<string, number> = {};
     for (const h of Array.from(memoryStore.history.values()) as any[]) {
@@ -296,9 +306,8 @@ export function adminGetTopRules(limit: number = 10) {
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([rule, count]) => ({ rule, count }));
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
-  const rows = db.prepare("SELECT rules FROM ask_history WHERE rules IS NOT NULL AND rules != ''").all() as { rules: string }[];
+  await ensureReady();
+  const rows = (await getPool()!.query("SELECT rules FROM ask_history WHERE rules IS NOT NULL AND rules != ''")).rows as { rules: string }[];
   const counts: Record<string, number> = {};
   for (const row of rows) {
     try {
@@ -314,7 +323,7 @@ export function adminGetTopRules(limit: number = 10) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([rule, count]) => ({ rule, count }));
 }
 
-export function adminListUsers(page: number = 1, limit: number = 20, search: string = "") {
+export async function adminListUsers(page: number = 1, limit: number = 20, search: string = "") {
   const offset = (page - 1) * limit;
   if (USE_FALLBACK) {
     let users = Array.from(memoryStore.users.values());
@@ -332,21 +341,24 @@ export function adminListUsers(page: number = 1, limit: number = 20, search: str
     });
     return { users: page_users, total, page, limit };
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
-  const where = search ? "WHERE username LIKE ? OR email LIKE ?" : "";
-  const params: any[] = search ? [`%${search}%`, `%${search}%`] : [];
-  const total = (db.prepare(`SELECT COUNT(*) as c FROM users ${where}`).get(...params) as { c: number }).c;
-  const users = db.prepare(
+  await ensureReady();
+  const p = getPool()!;
+  const where = search ? "WHERE username ILIKE $1 OR email ILIKE $1" : "";
+  const params: any[] = search ? [`%${search}%`] : [];
+  const total = (await p.query(`SELECT COUNT(*)::int AS c FROM users ${where}`, params)).rows[0].c;
+  const limitParamIdx = params.length + 1;
+  const offsetParamIdx = params.length + 2;
+  const users = (await p.query(
     `SELECT u.id, u.username, u.email, u.created_at,
-       (SELECT COUNT(*) FROM ask_history WHERE user_id = u.id) as history_count
+       (SELECT COUNT(*)::int FROM ask_history WHERE user_id = u.id) AS history_count
      FROM users u ${where}
-     ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset);
+     ORDER BY u.created_at DESC LIMIT $${limitParamIdx} OFFSET $${offsetParamIdx}`,
+    [...params, limit, offset]
+  )).rows;
   return { users, total, page, limit };
 }
 
-export function adminGetUserDetail(userId: string) {
+export async function adminGetUserDetail(userId: string) {
   if (USE_FALLBACK) {
     const u: any = memoryStore.users.get(userId);
     if (!u) return null;
@@ -355,17 +367,18 @@ export function adminGetUserDetail(userId: string) {
       .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
     return { user: { id: u.id, username: u.username, email: u.email, created_at: u.created_at }, history };
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
-  const user = db.prepare("SELECT id, username, email, created_at FROM users WHERE id = ?").get(userId);
-  if (!user) return null;
-  const history = db.prepare(
-    "SELECT id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT 200"
-  ).all(userId);
-  return { user, history };
+  await ensureReady();
+  const p = getPool()!;
+  const userR = await p.query("SELECT id, username, email, created_at FROM users WHERE id = $1", [userId]);
+  if (userR.rows.length === 0) return null;
+  const history = (await p.query(
+    "SELECT id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 200",
+    [userId]
+  )).rows;
+  return { user: userR.rows[0], history };
 }
 
-export function adminListHistory(page: number = 1, limit: number = 20, userId: string = "", q: string = "") {
+export async function adminListHistory(page: number = 1, limit: number = 20, userId: string = "", q: string = "") {
   const offset = (page - 1) * limit;
   if (USE_FALLBACK) {
     let history = Array.from(memoryStore.history.values()) as any[];
@@ -382,18 +395,25 @@ export function adminListHistory(page: number = 1, limit: number = 20, userId: s
     });
     return { history: page_history, total, page, limit };
   }
-  const g = (global as any).__yimingDb;
-  const db = g.db;
+  await ensureReady();
+  const p = getPool()!;
   const conds: string[] = [];
   const params: any[] = [];
-  if (userId) { conds.push("h.user_id = ?"); params.push(userId); }
-  if (q) { conds.push("(h.question LIKE ? OR h.answer LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
+  if (userId) { params.push(userId); conds.push(`h.user_id = $${params.length}`); }
+  if (q) { params.push(`%${q}%`); conds.push(`(h.question ILIKE $${params.length} OR h.answer ILIKE $${params.length})`); }
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const total = (db.prepare(`SELECT COUNT(*) as c FROM ask_history h ${where}`).get(...params) as { c: number }).c;
-  const history = db.prepare(
+  const total = (await p.query(`SELECT COUNT(*)::int AS c FROM ask_history h ${where}`, params)).rows[0].c;
+  const limIdx = params.length + 1;
+  const offIdx = params.length + 2;
+  const history = (await p.query(
     `SELECT h.id, h.user_id, h.question, h.answer, h.rules, h.timestamp, u.username
      FROM ask_history h LEFT JOIN users u ON h.user_id = u.id
-     ${where} ORDER BY h.timestamp DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset);
+     ${where} ORDER BY h.timestamp DESC LIMIT $${limIdx} OFFSET $${offIdx}`,
+    [...params, limit, offset]
+  )).rows;
   return { history, total, page, limit };
+}
+
+export async function closeDatabase() {
+  if (pool) { await pool.end(); pool = null; }
 }

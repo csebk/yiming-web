@@ -31,7 +31,7 @@ export async function DELETE(
 
     const { id } = await params;
 
-    const deleted = deleteHistoryItem(id, payload.userId);
+    const deleted = await deleteHistoryItem(id, payload.userId);
 
     if (!deleted) {
       return NextResponse.json(

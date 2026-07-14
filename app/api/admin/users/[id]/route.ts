@@ -9,7 +9,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   const { id } = await params;
   try {
-    const detail = adminGetUserDetail(id);
+    const detail = await adminGetUserDetail(id);
     if (!detail) return NextResponse.json({ success: false, error: "用户不存在" }, { status: 404 });
     return NextResponse.json({ success: true, ...detail });
   } catch (err) {

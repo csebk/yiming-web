@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     const page = parseInt(url.searchParams.get("page") || "1", 10);
     const limit = parseInt(url.searchParams.get("limit") || "20", 10);
 
-    const result = getHistory(payload.userId, page, Math.min(limit, 100));
+    const result = await getHistory(payload.userId, page, Math.min(limit, 100));
 
     return NextResponse.json({
       success: true,

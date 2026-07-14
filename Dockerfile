@@ -3,13 +3,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# 编译 better-sqlite3 等原生模块需要 python3/make/g++
-RUN apk add --no-cache python3 make g++
-
 # 复制 package 文件
 COPY package.json package-lock.json ./
 
-# 安装依赖（含 devDependencies，next build 需要 typescript 等）
+# 安装依赖
 RUN npm ci
 
 # 复制项目文件
@@ -28,12 +25,6 @@ ENV NODE_ENV=production
 # 创建非 root 用户
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
-
-# 创建持久化数据目录（默认 /app/data）
-# 通过环境变量 DATA_DIR 覆写；CloudBase 可挂载 CFS 到 /app/data 实现持久化
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
-ENV DATA_DIR=/app/data
-VOLUME ["/app/data"]
 
 # 从构建阶段复制 standalone 输出
 COPY --from=builder /app/public ./public

@@ -8,9 +8,9 @@ export async function GET(request: NextRequest) {
   if (auth instanceof NextResponse) return auth;
 
   try {
-    const stats = adminGetStats();
-    const trend = adminGetDailyTrend(30);
-    const topRules = adminGetTopRules(10);
+    const stats = await adminGetStats();
+    const trend = await adminGetDailyTrend(30);
+    const topRules = await adminGetTopRules(10);
     return NextResponse.json({ success: true, stats, trend, top_rules: topRules });
   } catch (err) {
     console.error("[admin/stats]", err);
