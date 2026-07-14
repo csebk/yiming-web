@@ -29,6 +29,12 @@ ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
+# 创建持久化数据目录（默认 /app/data）
+# 通过环境变量 DATA_DIR 覆写；CloudBase 可挂载 CFS 到 /app/data 实现持久化
+RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+ENV DATA_DIR=/app/data
+VOLUME ["/app/data"]
+
 # 从构建阶段复制 standalone 输出
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

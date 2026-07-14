@@ -18,14 +18,13 @@ try {
   // Test if we can actually write to the filesystem
   const path = require("path");
   const fs = require("fs");
-  const testDir = path.join(process.cwd(), ".data");
+  const testDir = process.env.DATA_DIR || path.join(process.cwd(), ".data");
   if (!fs.existsSync(testDir)) {
     fs.mkdirSync(testDir, { recursive: true });
   }
   const testFile = path.join(testDir, "test.tmp");
   fs.writeFileSync(testFile, "test");
   fs.unlinkSync(testFile);
-  fs.rmdirSync(testDir);
 } catch (err: unknown) {
   USE_FALLBACK = true;
   console.log("[yiming-db] Filesystem test failed, using fallback:", String(err));
@@ -49,8 +48,12 @@ if (USE_FALLBACK) {
     const path = require("path");
     const fs = require("fs");
 
-    const DB_DIR = path.join(process.cwd(), ".data");
+    const DB_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
+    if (!fs.existsSync(DB_DIR)) {
+      fs.mkdirSync(DB_DIR, { recursive: true });
+    }
     const DB_PATH = path.join(DB_DIR, "yiming.db");
+    console.log("[yiming-db] Using SQLite at:", DB_PATH);
 
     const db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
@@ -222,4 +225,175 @@ export function closeDatabase() {
   if (!USE_FALLBACK && (global as any).__yimingDb?.db) {
     (global as any).__yimingDb.db.close();
   }
+}
+
+// ============ Admin analytics functions ============
+
+export function adminGetStats() {
+  if (USE_FALLBACK) {
+    const users = Array.from(memoryStore.users.values());
+    const history = Array.from(memoryStore.history.values()) as any[];
+    const now = Date.now();
+    const dayAgo = now - 24 * 3600 * 1000;
+    const weekAgo = now - 7 * 24 * 3600 * 1000;
+    return {
+      user_count: users.length,
+      history_count: history.length,
+      users_last_24h: users.filter(u => new Date(u.created_at).getTime() > dayAgo).length,
+      history_last_24h: history.filter(h => new Date(h.timestamp).getTime() > dayAgo).length,
+      history_last_7d: history.filter(h => new Date(h.timestamp).getTime() > weekAgo).length,
+    };
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const userCount = db.prepare("SELECT COUNT(*) as c FROM users").get().c;
+  const historyCount = db.prepare("SELECT COUNT(*) as c FROM ask_history").get().c;
+  const users24h = db.prepare("SELECT COUNT(*) as c FROM users WHERE created_at > datetime('now', '-1 day')").get().c;
+  const history24h = db.prepare("SELECT COUNT(*) as c FROM ask_history WHERE timestamp > datetime('now', '-1 day')").get().c;
+  const history7d = db.prepare("SELECT COUNT(*) as c FROM ask_history WHERE timestamp > datetime('now', '-7 day')").get().c;
+  return { user_count: userCount, history_count: historyCount, users_last_24h: users24h, history_last_24h: history24h, history_last_7d: history7d };
+}
+
+export function adminGetDailyTrend(days: number = 30) {
+  if (USE_FALLBACK) {
+    const now = Date.now();
+    const cutoff = now - days * 24 * 3600 * 1000;
+    const history = Array.from(memoryStore.history.values()) as any[];
+    const byDate: Record<string, number> = {};
+    history.forEach(h => {
+      const ts = new Date(h.timestamp).getTime();
+      if (ts >= cutoff) {
+        const dateStr = new Date(ts).toISOString().slice(0, 10);
+        byDate[dateStr] = (byDate[dateStr] || 0) + 1;
+      }
+    });
+    return Object.entries(byDate).sort().map(([date, count]) => ({ date, count }));
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const rows = db.prepare(
+    `SELECT substr(timestamp, 1, 10) as date, COUNT(*) as count
+     FROM ask_history
+     WHERE timestamp > datetime('now', ?)
+     GROUP BY date ORDER BY date ASC`
+  ).all(`-${days} day`) as { date: string; count: number }[];
+  return rows;
+}
+
+export function adminGetTopRules(limit: number = 10) {
+  if (USE_FALLBACK) {
+    const counts: Record<string, number> = {};
+    for (const h of Array.from(memoryStore.history.values()) as any[]) {
+      try {
+        const rules = typeof h.rules === "string" ? JSON.parse(h.rules) : h.rules;
+        if (Array.isArray(rules)) {
+          for (const r of rules) {
+            const key = r?.title || r?.name || r?.id || String(r);
+            counts[key] = (counts[key] || 0) + 1;
+          }
+        }
+      } catch {}
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([rule, count]) => ({ rule, count }));
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const rows = db.prepare("SELECT rules FROM ask_history WHERE rules IS NOT NULL AND rules != ''").all() as { rules: string }[];
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    try {
+      const rules = JSON.parse(row.rules);
+      if (Array.isArray(rules)) {
+        for (const r of rules) {
+          const key = r?.title || r?.name || r?.id || String(r);
+          counts[key] = (counts[key] || 0) + 1;
+        }
+      }
+    } catch {}
+  }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([rule, count]) => ({ rule, count }));
+}
+
+export function adminListUsers(page: number = 1, limit: number = 20, search: string = "") {
+  const offset = (page - 1) * limit;
+  if (USE_FALLBACK) {
+    let users = Array.from(memoryStore.users.values());
+    if (search) {
+      const s = search.toLowerCase();
+      users = users.filter((u: any) =>
+        (u.username || "").toLowerCase().includes(s) || (u.email || "").toLowerCase().includes(s)
+      );
+    }
+    users.sort((a: any, b: any) => (b.created_at || "").localeCompare(a.created_at || ""));
+    const total = users.length;
+    const page_users = users.slice(offset, offset + limit).map((u: any) => {
+      const history_count = (Array.from(memoryStore.history.values()) as any[]).filter(h => h.user_id === u.id).length;
+      return { id: u.id, username: u.username, email: u.email, created_at: u.created_at, history_count };
+    });
+    return { users: page_users, total, page, limit };
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const where = search ? "WHERE username LIKE ? OR email LIKE ?" : "";
+  const params: any[] = search ? [`%${search}%`, `%${search}%`] : [];
+  const total = (db.prepare(`SELECT COUNT(*) as c FROM users ${where}`).get(...params) as { c: number }).c;
+  const users = db.prepare(
+    `SELECT u.id, u.username, u.email, u.created_at,
+       (SELECT COUNT(*) FROM ask_history WHERE user_id = u.id) as history_count
+     FROM users u ${where}
+     ORDER BY u.created_at DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+  return { users, total, page, limit };
+}
+
+export function adminGetUserDetail(userId: string) {
+  if (USE_FALLBACK) {
+    const u: any = memoryStore.users.get(userId);
+    if (!u) return null;
+    const history = (Array.from(memoryStore.history.values()) as any[])
+      .filter(h => h.user_id === userId)
+      .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+    return { user: { id: u.id, username: u.username, email: u.email, created_at: u.created_at }, history };
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const user = db.prepare("SELECT id, username, email, created_at FROM users WHERE id = ?").get(userId);
+  if (!user) return null;
+  const history = db.prepare(
+    "SELECT id, question, answer, rules, knowledge_base, timestamp FROM ask_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT 200"
+  ).all(userId);
+  return { user, history };
+}
+
+export function adminListHistory(page: number = 1, limit: number = 20, userId: string = "", q: string = "") {
+  const offset = (page - 1) * limit;
+  if (USE_FALLBACK) {
+    let history = Array.from(memoryStore.history.values()) as any[];
+    if (userId) history = history.filter(h => h.user_id === userId);
+    if (q) {
+      const s = q.toLowerCase();
+      history = history.filter(h => (h.question || "").toLowerCase().includes(s) || (h.answer || "").toLowerCase().includes(s));
+    }
+    history.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+    const total = history.length;
+    const page_history = history.slice(offset, offset + limit).map(h => {
+      const u: any = memoryStore.users.get(h.user_id);
+      return { ...h, username: u?.username || "unknown" };
+    });
+    return { history: page_history, total, page, limit };
+  }
+  const g = (global as any).__yimingDb;
+  const db = g.db;
+  const conds: string[] = [];
+  const params: any[] = [];
+  if (userId) { conds.push("h.user_id = ?"); params.push(userId); }
+  if (q) { conds.push("(h.question LIKE ? OR h.answer LIKE ?)"); params.push(`%${q}%`, `%${q}%`); }
+  const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+  const total = (db.prepare(`SELECT COUNT(*) as c FROM ask_history h ${where}`).get(...params) as { c: number }).c;
+  const history = db.prepare(
+    `SELECT h.id, h.user_id, h.question, h.answer, h.rules, h.timestamp, u.username
+     FROM ask_history h LEFT JOIN users u ON h.user_id = u.id
+     ${where} ORDER BY h.timestamp DESC LIMIT ? OFFSET ?`
+  ).all(...params, limit, offset);
+  return { history, total, page, limit };
 }
