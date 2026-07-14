@@ -3,10 +3,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# 编译 better-sqlite3 等原生模块需要 python3/make/g++
+RUN apk add --no-cache python3 make g++
+
 # 复制 package 文件
 COPY package.json package-lock.json ./
 
-# 安装依赖
+# 安装依赖（含 devDependencies，next build 需要 typescript 等）
 RUN npm ci
 
 # 复制项目文件

@@ -8,6 +8,7 @@
 
 import type { KnowledgeBase } from './knowledge-base';
 import { yimingKnowledgeBase } from './knowledge-bases/yiming';
+import { lifeWisdomKnowledgeBase } from './knowledge-bases/life-wisdom';
 
 // 知识库注册表
 const registeredBases: Map<string, KnowledgeBase> = new Map();
@@ -56,6 +57,6 @@ export function searchAllKnowledgeBases(query: string, topK: number = 5) {
 }
 
 // 初始化：注册所有知识库
-for (const kb of [yimingKnowledgeBase]) {
+for (const kb of [yimingKnowledgeBase, lifeWisdomKnowledgeBase]) {
   registerKnowledgeBase(kb);
 }

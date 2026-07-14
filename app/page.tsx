@@ -2,6 +2,13 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useAuth, type User } from "@/lib/auth-context";
+import { getAllKnowledgeBases } from "@/lib/knowledge-registry";
+
+interface KnowledgeBaseInfo {
+  id: string;
+  name: string;
+  description: string;
+}
 
 interface AnswerRule {
   id: number;
@@ -16,6 +23,7 @@ interface AnswerRecord {
   answer: string;
   rules: AnswerRule[];
   timestamp: number;
+  knowledgeBase?: string;
 }
 
 interface CloudHistoryItem {
@@ -30,6 +38,7 @@ interface ApiResponse {
   answer: string;
   rules: AnswerRule[];
   question: string;
+  knowledgeBase?: string;
   error?: string;
 }
 
@@ -61,8 +70,21 @@ export default function Home() {
   const [dailyQuote, setDailyQuote] = useState<string>("");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseInfo[]>([]);
+  const [selectedKb, setSelectedKb] = useState<string>("yiming");
+  const [showKbPicker, setShowKbPicker] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // 加载可用知识库列表
+  useEffect(() => {
+    try {
+      const bases = getAllKnowledgeBases();
+      setKnowledgeBases(bases.map((kb) => ({ id: kb.id, name: kb.name, description: kb.description })));
+    } catch {
+      setKnowledgeBases([{ id: "yiming", name: "易命之书", description: "52条人生法则" }]);
+    }
+  }, []);
 
   // 每日一句
   useEffect(() => {
@@ -138,7 +160,8 @@ export default function Home() {
     setCurrentAnswer(null);
 
     try {
-      const res = await fetch("/api/ask", {
+      const kbParam = selectedKb !== "yiming" ? `?kb=${encodeURIComponent(selectedKb)}` : "";
+      const res = await fetch(`/api/ask${kbParam}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: question.trim() }),
@@ -155,6 +178,7 @@ export default function Home() {
           answer: data.answer,
           rules: data.rules,
           timestamp: Date.now(),
+          knowledgeBase: data.knowledgeBase || "yiming",
         };
         setCurrentAnswer(record);
         saveHistory([record, ...history]);
@@ -371,7 +395,7 @@ export default function Home() {
               有什么困惑，想问问易命先生？
             </h2>
             <p className="text-stone-500 text-sm max-w-md mx-auto">
-              写下你的问题，《易命之书》52条人生法则将为你解读
+              写下你的问题，{knowledgeBases.find((kb) => kb.id === selectedKb)?.name || "《易命之书》"}将为你解读
             </p>
             {!user && (
               <p className="text-xs text-amber-500 mt-2">
@@ -383,6 +407,44 @@ export default function Home() {
 
         {/* Question Input */}
         <section className={`${currentAnswer || loading ? "mb-6" : "mb-10"} animate-fade-in-up delay-100`}>
+          {/* Knowledge Base Selector */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="relative">
+              <button
+                onClick={() => setShowKbPicker(!showKbPicker)}
+                className="px-3 py-1.5 text-xs bg-white border border-amber-200 rounded-lg text-stone-600 hover:bg-amber-50 transition-colors flex items-center gap-1.5"
+              >
+                <span>📚</span>
+                <span>{knowledgeBases.find((kb) => kb.id === selectedKb)?.name || "易命之书"}</span>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showKbPicker && (
+                <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-amber-200 rounded-xl shadow-lg overflow-hidden z-30">
+                  {knowledgeBases.map((kb) => (
+                    <button
+                      key={kb.id}
+                      onClick={() => { setSelectedKb(kb.id); setShowKbPicker(false); }}
+                      className={`w-full text-left px-4 py-2.5 text-xs hover:bg-amber-50 transition-colors ${
+                        selectedKb === kb.id ? "bg-amber-50 text-amber-700 font-medium" : "text-stone-600"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span>{kb.name}</span>
+                        {selectedKb === kb.id && <span className="text-amber-500">✓</span>}
+                      </div>
+                      <p className="text-[10px] text-stone-400 mt-0.5">{kb.description}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-stone-400">
+              当前使用 {knowledgeBases.find((kb) => kb.id === selectedKb)?.name || "易命之书"}
+            </p>
+          </div>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="relative">
               <textarea
