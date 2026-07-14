@@ -37,6 +37,24 @@ export function verifyToken(token: string): JWTPayload | null {
   }
 }
 
+/**
+ * Extract auth token from either Cookie (Web) or Authorization Bearer Header (miniprogram/mobile).
+ * Cookie takes precedence when both present.
+ */
+export function getTokenFromRequest(request: {
+  cookies: { get: (name: string) => { value: string } | undefined };
+  headers: { get: (name: string) => string | null };
+}): string | undefined {
+  const cookieToken = request.cookies.get("auth_token")?.value;
+  if (cookieToken) return cookieToken;
+
+  const authHeader = request.headers.get("authorization") || request.headers.get("Authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.slice(7).trim();
+  }
+  return undefined;
+}
+
 /** Password strength validation */
 export function validatePasswordStrength(password: string): { valid: boolean; error?: string } {
   if (password.length < 6) {

@@ -5,14 +5,14 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { deleteHistoryItem } from "@/lib/database";
-import { verifyToken } from "@/lib/auth";
+import { verifyToken, getTokenFromRequest } from "@/lib/auth";
 
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const token = request.cookies.get("auth_token")?.value;
+    const token = getTokenFromRequest(request);
 
     if (!token) {
       return NextResponse.json(

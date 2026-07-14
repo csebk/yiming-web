@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { searchAllKnowledgeBases, getKnowledgeBase } from "@/lib/knowledge-registry";
-import { verifyToken } from "@/lib/auth";
+import { verifyToken, getTokenFromRequest } from "@/lib/auth";
 import { saveHistory } from "@/lib/database";
 
 // 模拟大模型响应（无 API Key 时的 fallback）
@@ -68,7 +68,7 @@ export async function POST(request: NextRequest) {
     const question = body.question?.trim();
     
     // 提取用户ID（可选：未登录也能问，但历史记录不保存）
-    const token = request.cookies.get("auth_token")?.value;
+    const token = getTokenFromRequest(request);
     let userId: string | null = null;
     if (token) {
       const payload = verifyToken(token);
