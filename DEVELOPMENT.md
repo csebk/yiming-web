@@ -359,7 +359,8 @@ console.log(process.env.ADMIN_PASSWORD_HASH?.length);  // 必须 60
 
 | 日期 | 版本 | 功能 | 用户可见变化 | 关联文件/位置 |
 |---|---|---|---|---|
-| 2026-07-15 | v0.2 | **大模型配置后台** | 管理后台新增"模型配置"菜单，可视化切换 Provider（DashScope / 豆包 / DeepSeek / OpenAI）、模型名、温度、Max Tokens、System Prompt，"测试连接"按钮可即时验证。无需改代码换模型。 | `app/admin/model-config/page.tsx`, `app/api/admin/model-config/*`, `lib/llm-client.ts`, `lib/providers.ts` |
+| 2026-07-15 | v0.2 | **大模型配置后台上线生产** | 生产环境（CloudBase + Vercel）后台可视化切换 Provider / 模型 / 温度 / System Prompt，无需改代码换模型。CloudBase URL: `yiming-web-277386-9-1258799061.sh.run.tcloudbase.com`。Commit `50ad397`。 | 全部（见下方 v0.2 三条）|
+| 2026-07-15 | v0.2 | 大模型配置后台（功能） | 管理后台新增"模型配置"菜单，可视化切换 Provider（DashScope / 豆包 / DeepSeek / OpenAI）、模型名、温度、Max Tokens、System Prompt，"测试连接"按钮可即时验证。 | `app/admin/model-config/page.tsx`, `app/api/admin/model-config/*`, `lib/llm-client.ts`, `lib/providers.ts` |
 | 2026-07-15 | v0.2 | 本地/生产表隔离（内部） | 无用户可见变化。开发者在本地保存模型配置不再污染生产数据。 | `lib/database.ts` (`MODEL_CONFIG_TABLE` env) |
 | 2026-07-15 | v0.2 | 开发手册 DEVELOPMENT.md | 无用户可见变化。团队/AI 助手可查阅统一开发文档。 | `DEVELOPMENT.md` |
 | 2026-07-15 | v0.1 | 管理后台 | 管理员可查看用户列表、问答记录、KPI 概览、每日趋势、热门法则 | `app/admin/*`, `app/api/admin/*` |
