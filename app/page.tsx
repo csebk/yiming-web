@@ -86,20 +86,21 @@ export default function Home() {
     }
   }, []);
 
-  // 每日一句
+  // 每日一句 — 从 API 获取
   useEffect(() => {
-    const quotes = [
-      "灵若根，身若树，运若叶。叶虽凋落，苟灵不死、身不枯，逢其时，终见枝繁叶茂。",
-      "容受万事，御运在己。洞明造化，即得真运。",
-      "无待而常适者，天之所厚，亦至运也。",
-      "遇不可解之事，避而俟之，或乃上策。",
-      "正对内惧，乃得天眷。",
-      "逢凶时，当先谋化吉之道。",
-      "计其所有而不念所无者，斯为吉人之兆也。",
-      "不贪者，贪之上境也。",
-    ];
-    const dayIndex = new Date().getDate() % quotes.length;
-    setDailyQuote(quotes[dayIndex]);
+    (async () => {
+      try {
+        const res = await fetch("/api/daily-quote");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.quote) {
+            setDailyQuote(data.quote);
+          }
+        }
+      } catch {
+        // fallback: 静默失败，保持空状态
+      }
+    })();
   }, []);
 
   // 加载云端历史
