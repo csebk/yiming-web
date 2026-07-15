@@ -34,6 +34,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: "/admin", label: "概览" },
     { href: "/admin/users", label: "用户" },
     { href: "/admin/history", label: "问答记录" },
+    { href: "/admin/model-config", label: "模型配置" },
   ];
 
   const handleLogout = () => {

@@ -64,6 +64,24 @@ async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_history_user ON ask_history(user_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_history_time ON ask_history(timestamp DESC);
     `);
+    // model_config table (name overridable via MODEL_CONFIG_TABLE for dev isolation)
+    const modelConfigTable = process.env.MODEL_CONFIG_TABLE || "model_config";
+    if (!/^[a-zA-Z0-9_]+$/.test(modelConfigTable)) {
+      throw new Error(`Invalid MODEL_CONFIG_TABLE: ${modelConfigTable}`);
+    }
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ${modelConfigTable} (
+        id            INT PRIMARY KEY DEFAULT 1,
+        provider      TEXT NOT NULL,
+        model_name    TEXT NOT NULL,
+        temperature   NUMERIC DEFAULT 0.5,
+        max_tokens    INT DEFAULT 1500,
+        system_prompt TEXT,
+        updated_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_by    TEXT,
+        CONSTRAINT ${modelConfigTable}_singleton CHECK (id = 1)
+      );
+    `);
     console.log("[yiming-db] Postgres schema ready");
   } finally {
     client.release();
@@ -412,6 +430,77 @@ export async function adminListHistory(page: number = 1, limit: number = 20, use
     [...params, limit, offset]
   )).rows;
   return { history, total, page, limit };
+}
+
+// ============ Model config (singleton row, id=1) ============
+
+export interface ModelConfigRow {
+  provider: string;
+  model_name: string;
+  temperature: number | null;
+  max_tokens: number | null;
+  system_prompt: string | null;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+let memoryModelConfig: ModelConfigRow | null = null;
+
+function modelConfigTableName(): string {
+  const t = process.env.MODEL_CONFIG_TABLE || "model_config";
+  if (!/^[a-zA-Z0-9_]+$/.test(t)) throw new Error(`Invalid MODEL_CONFIG_TABLE: ${t}`);
+  return t;
+}
+
+export async function getModelConfig(): Promise<ModelConfigRow | null> {
+  if (USE_FALLBACK) return memoryModelConfig;
+  await ensureReady();
+  const r = await getPool()!.query(
+    `SELECT provider, model_name, temperature, max_tokens, system_prompt, updated_at, updated_by FROM ${modelConfigTableName()} WHERE id = 1`
+  );
+  return r.rows[0] || null;
+}
+
+export async function upsertModelConfig(
+  cfg: ModelConfigRow,
+  updatedBy: string
+): Promise<ModelConfigRow> {
+  const row: ModelConfigRow = {
+    provider: cfg.provider,
+    model_name: cfg.model_name,
+    temperature: cfg.temperature,
+    max_tokens: cfg.max_tokens,
+    system_prompt: cfg.system_prompt,
+    updated_at: new Date().toISOString(),
+    updated_by: updatedBy,
+  };
+  if (USE_FALLBACK) {
+    memoryModelConfig = row;
+    return row;
+  }
+  await ensureReady();
+  const table = modelConfigTableName();
+  await getPool()!.query(
+    `INSERT INTO ${table} (id, provider, model_name, temperature, max_tokens, system_prompt, updated_at, updated_by)
+     VALUES (1, $1, $2, $3, $4, $5, NOW(), $6)
+     ON CONFLICT (id) DO UPDATE SET
+       provider = EXCLUDED.provider,
+       model_name = EXCLUDED.model_name,
+       temperature = EXCLUDED.temperature,
+       max_tokens = EXCLUDED.max_tokens,
+       system_prompt = EXCLUDED.system_prompt,
+       updated_at = NOW(),
+       updated_by = EXCLUDED.updated_by`,
+    [
+      row.provider,
+      row.model_name,
+      row.temperature,
+      row.max_tokens,
+      row.system_prompt,
+      updatedBy,
+    ]
+  );
+  return row;
 }
 
 export async function closeDatabase() {
