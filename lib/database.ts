@@ -18,6 +18,7 @@ let USE_FALLBACK = !process.env.DATABASE_URL;
 const memoryStore = {
   users: new Map<string, any>(),
   history: new Map<string, any>(),
+  growth: new Map<string, any>(),
 };
 
 let pool: Pool | null = null;
@@ -63,6 +64,17 @@ async function initSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_history_user ON ask_history(user_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_history_time ON ask_history(timestamp DESC);
+      CREATE TABLE IF NOT EXISTS growth_records (
+        id             TEXT PRIMARY KEY,
+        user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        date           DATE NOT NULL,
+        mood           SMALLINT NOT NULL CHECK (mood >= 1 AND mood <= 5),
+        content        TEXT DEFAULT '',
+        tags           TEXT DEFAULT '[]',
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_growth_user_date ON growth_records(user_id, date DESC);
     `);
     // model_config table (name overridable via MODEL_CONFIG_TABLE for dev isolation)
     const modelConfigTable = process.env.MODEL_CONFIG_TABLE || "model_config";
@@ -501,6 +513,116 @@ export async function upsertModelConfig(
     ]
   );
   return row;
+}
+
+// ============ Growth record functions ============
+
+export interface GrowthRecord {
+  id: string;
+  user_id: string;
+  date: string;          // YYYY-MM-DD
+  mood: number;          // 1-5
+  content: string;
+  tags: string[];
+  created_at: string;
+}
+
+export async function createGrowthRecord(
+  userId: string,
+  mood: number,
+  content: string,
+  tags: string[]
+): Promise<GrowthRecord> {
+  const id = randomUUID();
+  const today = new Date().toISOString().slice(0, 10);
+  const nowIso = new Date().toISOString();
+  const tagsJson = JSON.stringify(tags || []);
+
+  if (USE_FALLBACK) {
+    const rec: GrowthRecord = { id, user_id: userId, date: today, mood, content, tags, created_at: nowIso };
+    memoryStore.growth = memoryStore.growth || new Map();
+    memoryStore.growth.set(id, rec);
+    return rec;
+  }
+
+  await ensureReady();
+  await getPool()!.query(
+    `INSERT INTO growth_records (id, user_id, date, mood, content, tags) VALUES ($1, $2, $3, $4, $5, $6)`,
+    [id, userId, today, mood, content, tagsJson]
+  );
+  return { id, user_id: userId, date: today, mood, content, tags, created_at: nowIso };
+}
+
+export async function getTodayGrowthRecord(userId: string): Promise<GrowthRecord | null> {
+  const today = new Date().toISOString().slice(0, 10);
+  if (USE_FALLBACK) {
+    const store = memoryStore.growth || new Map();
+    for (const r of store.values()) {
+      if (r.user_id === userId && r.date === today) return r;
+    }
+    return null;
+  }
+  await ensureReady();
+  const r = await getPool()!.query(
+    "SELECT * FROM growth_records WHERE user_id = $1 AND date = $2 LIMIT 1",
+    [userId, today]
+  );
+  return r.rows[0] ? { ...r.rows[0], tags: typeof r.rows[0].tags === 'string' ? JSON.parse(r.rows[0].tags) : r.rows[0].tags } : null;
+}
+
+export async function getGrowthRecords(
+  userId: string,
+  year: number,
+  month: number
+): Promise<GrowthRecord[]> {
+  const start = `${year}-${String(month).padStart(2, "0")}-01`;
+  const endDate = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+
+  if (USE_FALLBACK) {
+    const store = memoryStore.growth || new Map();
+    const results: GrowthRecord[] = [];
+    for (const r of store.values()) {
+      if (r.user_id === userId && r.date >= start && r.date < endDate) {
+        results.push(r);
+      }
+    }
+    results.sort((a, b) => a.date.localeCompare(b.date));
+    return results;
+  }
+
+  await ensureReady();
+  const r = await getPool()!.query(
+    "SELECT * FROM growth_records WHERE user_id = $1 AND date >= $2 AND date < $3 ORDER BY date ASC",
+    [userId, start, endDate]
+  );
+  return r.rows.map((row: any) => ({
+    ...row,
+    tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags,
+  }));
+}
+
+export async function getGrowthStreak(userId: string): Promise<number> {
+  const records = await getGrowthRecords(userId, new Date().getFullYear(), new Date().getMonth() + 1);
+  // 也需要检查上个月末的连续记录
+  const today = new Date().toISOString().slice(0, 10);
+  const recDates = new Set(records.map(r => r.date));
+
+  let streak = 0;
+  const d = new Date();
+  while (true) {
+    const dateStr = d.toISOString().slice(0, 10);
+    if (recDates.has(dateStr)) {
+      streak++;
+      d.setDate(d.getDate() - 1);
+    } else if (dateStr === today) {
+      // today hasn't checked in yet, but streak could be from yesterday
+      d.setDate(d.getDate() - 1);
+      continue;
+    } else {
+      break;
+    }
+  }
+  return streak;
 }
 
 export async function closeDatabase() {

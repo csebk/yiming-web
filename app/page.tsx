@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useAuth, type User } from "@/lib/auth-context";
 import { getAllKnowledgeBases } from "@/lib/knowledge-registry";
+import GrowthPanel from "./components/growth-panel";
 
 interface KnowledgeBaseInfo {
   id: string;
@@ -73,6 +74,7 @@ export default function Home() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseInfo[]>([]);
   const [selectedKb, setSelectedKb] = useState<string>("yiming");
   const [showKbPicker, setShowKbPicker] = useState(false);
+  const [showGrowth, setShowGrowth] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -268,6 +270,14 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {user && (
+              <button
+                onClick={() => setShowGrowth(true)}
+                className="px-3 py-1.5 text-xs bg-green-50 border border-green-200 rounded-lg text-green-700 hover:bg-green-100 transition-colors flex items-center gap-1"
+              >
+                🌱 成长
+              </button>
+            )}
             {history.length > 0 && (
               <button
                 onClick={() => setShowHistory(!showHistory)}
@@ -322,6 +332,9 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      {/* Growth Panel */}
+      {showGrowth && <GrowthPanel onClose={() => setShowGrowth(false)} />}
 
       {/* History Panel */}
       {showHistory && (
