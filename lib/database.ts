@@ -19,6 +19,8 @@ const memoryStore = {
   users: new Map<string, any>(),
   history: new Map<string, any>(),
   growth: new Map<string, any>(),
+  orders: new Map<string, any>(),
+  reports: new Map<string, any>(),
 };
 
 let pool: Pool | null = null;
@@ -75,6 +77,32 @@ async function initSchema(): Promise<void> {
         UNIQUE(user_id, date)
       );
       CREATE INDEX IF NOT EXISTS idx_growth_user_date ON growth_records(user_id, date DESC);
+      CREATE TABLE IF NOT EXISTS orders (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type          TEXT NOT NULL DEFAULT 'deep_analysis',
+        question      TEXT,
+        price         NUMERIC(10,2) NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'pending',
+        pay_method    TEXT,
+        transaction_id TEXT,
+        report_id     TEXT,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        paid_at       TIMESTAMPTZ,
+        expires_at    TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+      CREATE TABLE IF NOT EXISTS analysis_reports (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        order_id      TEXT REFERENCES orders(id),
+        type          TEXT NOT NULL DEFAULT 'deep_analysis',
+        question      TEXT,
+        report_json   JSONB NOT NULL DEFAULT '{}',
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_reports_user ON analysis_reports(user_id, created_at DESC);
     `);
     // model_config table (name overridable via MODEL_CONFIG_TABLE for dev isolation)
     const modelConfigTable = process.env.MODEL_CONFIG_TABLE || "model_config";
@@ -623,6 +651,169 @@ export async function getGrowthStreak(userId: string): Promise<number> {
     }
   }
   return streak;
+}
+
+// ============ Order & Report functions (付费深度分析) ============
+
+export interface OrderRecord {
+  id: string;
+  user_id: string;
+  type: string;
+  question: string | null;
+  price: number;
+  status: string; // pending, paid, refunded, expired
+  pay_method: string | null;
+  transaction_id: string | null;
+  report_id: string | null;
+  created_at: string;
+  paid_at: string | null;
+  expires_at: string | null;
+}
+
+export interface AnalysisReport {
+  id: string;
+  user_id: string;
+  order_id: string | null;
+  type: string;
+  question: string | null;
+  report_json: any;
+  created_at: string;
+}
+
+const PAYMENT_PRICES: Record<string, number> = {
+  deep_analysis: 9.9,
+  monthly_report: 29.9,
+  yearly_plan: 99,
+};
+
+export async function createOrder(
+  userId: string,
+  type: string,
+  question: string
+): Promise<OrderRecord> {
+  const id = randomUUID();
+  const price = PAYMENT_PRICES[type] || 9.9;
+  const nowIso = new Date().toISOString();
+
+  if (USE_FALLBACK) {
+    const rec: OrderRecord = {
+      id, user_id: userId, type, question, price,
+      status: "pending", pay_method: null, transaction_id: null,
+      report_id: null, created_at: nowIso, paid_at: null, expires_at: null,
+    };
+    memoryStore.orders.set(id, rec);
+    return rec;
+  }
+
+  await ensureReady();
+  await getPool()!.query(
+    `INSERT INTO orders (id, user_id, type, question, price) VALUES ($1, $2, $3, $4, $5)`,
+    [id, userId, type, question, price]
+  );
+  return { id, user_id: userId, type, question, price, status: "pending", pay_method: null, transaction_id: null, report_id: null, created_at: nowIso, paid_at: null, expires_at: null };
+}
+
+export async function getOrder(orderId: string): Promise<OrderRecord | undefined> {
+  if (USE_FALLBACK) return memoryStore.orders.get(orderId);
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM orders WHERE id = $1", [orderId]);
+  return r.rows[0];
+}
+
+export async function getUserOrders(userId: string, limit: number = 20, offset: number = 0): Promise<OrderRecord[]> {
+  if (USE_FALLBACK) {
+    const all = Array.from(memoryStore.orders.values())
+      .filter((o: any) => o.user_id === userId)
+      .sort((a: any, b: any) => (b.created_at || "").localeCompare(a.created_at || ""));
+    return all.slice(offset, offset + limit);
+  }
+  await ensureReady();
+  const r = await getPool()!.query(
+    "SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+    [userId, limit, offset]
+  );
+  return r.rows;
+}
+
+export async function markOrderPaid(
+  orderId: string,
+  payMethod: string,
+  transactionId: string
+): Promise<OrderRecord | undefined> {
+  if (USE_FALLBACK) {
+    const rec: any = memoryStore.orders.get(orderId);
+    if (!rec) return undefined;
+    rec.status = "paid";
+    rec.pay_method = payMethod;
+    rec.transaction_id = transactionId;
+    rec.paid_at = new Date().toISOString();
+    return rec;
+  }
+  await ensureReady();
+  await getPool()!.query(
+    `UPDATE orders SET status = 'paid', pay_method = $1, transaction_id = $2, paid_at = NOW() WHERE id = $3`,
+    [payMethod, transactionId, orderId]
+  );
+  return getOrder(orderId);
+}
+
+export async function createReport(
+  userId: string,
+  orderId: string,
+  type: string,
+  question: string | null,
+  reportJson: any
+): Promise<AnalysisReport> {
+  const id = randomUUID();
+  const nowIso = new Date().toISOString();
+  const jsonStr = typeof reportJson === "string" ? reportJson : JSON.stringify(reportJson);
+
+  if (USE_FALLBACK) {
+    // Parse tags back as needed
+    let parsedJson = reportJson;
+    if (typeof reportJson === "string") { try { parsedJson = JSON.parse(reportJson); } catch { parsedJson = reportJson; } }
+    const rec: AnalysisReport = {
+      id, user_id: userId, order_id: orderId, type, question,
+      report_json: parsedJson, created_at: nowIso,
+    };
+    memoryStore.reports.set(id, rec);
+    // Link report to order
+    const order: any = memoryStore.orders.get(orderId);
+    if (order) { order.report_id = id; }
+    return rec;
+  }
+
+  await ensureReady();
+  const p = getPool()!;
+  await p.query(
+    `INSERT INTO analysis_reports (id, user_id, order_id, type, question, report_json) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [id, userId, orderId, type, question, jsonStr]
+  );
+  await p.query("UPDATE orders SET report_id = $1 WHERE id = $2", [id, orderId]);
+  return { id, user_id: userId, order_id: orderId, type, question, report_json: reportJson, created_at: nowIso };
+}
+
+export async function getReport(reportId: string): Promise<AnalysisReport | undefined> {
+  if (USE_FALLBACK) return memoryStore.reports.get(reportId);
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM analysis_reports WHERE id = $1", [reportId]);
+  if (!r.rows[0]) return undefined;
+  const row = r.rows[0];
+  return { ...row, report_json: typeof row.report_json === "string" ? JSON.parse(row.report_json) : row.report_json };
+}
+
+export async function getReportByOrder(orderId: string): Promise<AnalysisReport | undefined> {
+  if (USE_FALLBACK) {
+    for (const r of memoryStore.reports.values()) {
+      if (r.order_id === orderId) return r;
+    }
+    return undefined;
+  }
+  await ensureReady();
+  const r = await getPool()!.query("SELECT * FROM analysis_reports WHERE order_id = $1 LIMIT 1", [orderId]);
+  if (!r.rows[0]) return undefined;
+  const row = r.rows[0];
+  return { ...row, report_json: typeof row.report_json === "string" ? JSON.parse(row.report_json) : row.report_json };
 }
 
 export async function closeDatabase() {
