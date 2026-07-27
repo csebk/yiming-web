@@ -41,6 +41,25 @@ function getPool(): Pool | null {
   return pool;
 }
 
+/**
+ * Health-check helper: ping the database.
+ * Returns { mode, ok, latencyMs }. In fallback (memory) mode, ok is always true.
+ */
+export async function pingDatabase(): Promise<{ mode: "postgres" | "memory"; ok: boolean; latencyMs: number | null; error?: string }> {
+  if (USE_FALLBACK) {
+    return { mode: "memory", ok: true, latencyMs: null };
+  }
+  const start = Date.now();
+  try {
+    const p = getPool();
+    if (!p) return { mode: "memory", ok: true, latencyMs: null };
+    await p.query("SELECT 1");
+    return { mode: "postgres", ok: true, latencyMs: Date.now() - start };
+  } catch (err: unknown) {
+    return { mode: "postgres", ok: false, latencyMs: Date.now() - start, error: String(err) };
+  }
+}
+
 async function initSchema(): Promise<void> {
   const p = getPool();
   if (!p) return;
