@@ -10,7 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { searchAllKnowledgeBases, getKnowledgeBase } from "@/lib/knowledge-registry";
 import { verifyToken, getTokenFromRequest } from "@/lib/auth";
 import { saveHistory } from "@/lib/database";
-import { callLLM } from "@/lib/llm-client";
+import { callLLM, getActiveModelConfig } from "@/lib/llm-client";
 
 export async function POST(request: NextRequest) {
   try {
@@ -79,6 +79,9 @@ ${question}`;
 
     const answer = await callLLM(prompt);
 
+    // 当前生效的模型配置（30s 缓存，读 DB 失败自动回落默认值）
+    const modelConfig = await getActiveModelConfig();
+
     // 3. 保存历史记录（仅已登录用户）
     if (userId) {
       try {
@@ -101,6 +104,9 @@ ${question}`;
       })),
       question,
       knowledgeBase: knowledgeBaseId,
+      knowledgeBaseName: kb ? kb.name : "全知识库",
+      model: modelConfig.model_name,
+      provider: modelConfig.provider,
     });
   } catch (error) {
     console.error("[yiming] 处理请求失败:", error);

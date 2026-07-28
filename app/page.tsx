@@ -25,6 +25,9 @@ interface AnswerRecord {
   rules: AnswerRule[];
   timestamp: number;
   knowledgeBase?: string;
+  knowledgeBaseName?: string;
+  model?: string;
+  provider?: string;
 }
 
 interface CloudHistoryItem {
@@ -40,6 +43,9 @@ interface ApiResponse {
   rules: AnswerRule[];
   question: string;
   knowledgeBase?: string;
+  knowledgeBaseName?: string;
+  model?: string;
+  provider?: string;
   error?: string;
 }
 
@@ -182,6 +188,9 @@ export default function Home() {
           rules: data.rules,
           timestamp: Date.now(),
           knowledgeBase: data.knowledgeBase || "yiming",
+          knowledgeBaseName: data.knowledgeBaseName,
+          model: data.model,
+          provider: data.provider,
         };
         setCurrentAnswer(record);
         saveHistory([record, ...history]);
@@ -598,8 +607,17 @@ export default function Home() {
                 </div>
               </div>
               <div className="px-6 pb-4">
-                <div className="flex items-center gap-2 pt-3 border-t border-amber-100/50">
+                <div className="flex items-center gap-2 flex-wrap pt-3 border-t border-amber-100/50">
                   <span className="text-xs text-stone-400">⏱ {formatTime(currentAnswer.timestamp)}</span>
+                  {currentAnswer.model && (
+                    <span className="text-xs text-stone-400">
+                      · ⚙ 由 {currentAnswer.model}
+                      {currentAnswer.provider ? `（${currentAnswer.provider}）` : ""} 驱动
+                    </span>
+                  )}
+                  {currentAnswer.knowledgeBaseName && (
+                    <span className="text-xs text-stone-400">· 📚 {currentAnswer.knowledgeBaseName}</span>
+                  )}
                 </div>
               </div>
             </div>
